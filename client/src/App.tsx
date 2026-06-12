@@ -159,17 +159,45 @@ export default function App() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [isPlaying, setIsPlaying] = useState(true);
   const [playhead, setPlayhead] = useState(0);
+  // Full preview state
+  const [showFullPreview, setShowFullPreview] = useState(false);
+  const [fullPlayhead, setFullPlayhead] = useState(0);
+  const [fullIsPlaying, setFullIsPlaying] = useState(false);
+
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSceneId = useRef("");
   const rafRef = useRef<number | null>(null);
-  // Tracks { time: performance.now(), playhead: ms } at the moment play started
   const playOrigin = useRef({ time: 0, ms: 0 });
+  // Full preview refs
+  const fullIframeRef = useRef<HTMLIFrameElement>(null);
+  const fullRafRef = useRef<number | null>(null);
+  const fullPlayOrigin = useRef({ time: 0, ms: 0 });
+  const fullLoadedSceneIdx = useRef(-1);
 
   const selected = useMemo(
     () => project.scenes.find((s) => s.id === selectedId) ?? project.scenes[0],
     [project, selectedId]
   );
+
+  // Scene timeline offsets for full preview
+  const sceneOffsets = useMemo(() => {
+    let t = 0;
+    return project.scenes.map((s) => {
+      const start = t;
+      t += s.duration;
+      return { start, end: t };
+    });
+  }, [project.scenes]);
+
+  const totalDuration = sceneOffsets.length
+    ? sceneOffsets[sceneOffsets.length - 1].end
+    : 0;
+
+  const fullSceneIdx = useMemo(() => {
+    const i = sceneOffsets.findIndex((o) => fullPlayhead < o.end);
+    return i >= 0 ? i : project.scenes.length - 1;
+  }, [fullPlayhead, sceneOffsets, project.scenes.length]);
 
   const duration = selected?.duration ?? 4000;
 
@@ -383,6 +411,142 @@ export default function App() {
     }
   };
 
+  // ── Full Preview ────────────────────────────────────────
+
+  const fullWvc = (method: "play" | "pause" | "seek", arg?: number) => {
+    try {
+      const api = (fullIframeRef.current?.contentWindow as any)?.__wvc;
+      if (api) arg !== undefined ? api[method](arg) : api[method]();
+    } catch {}
+  };
+
+  const writeFullScene = (idx: number, seekMs?: number) => {
+    const scene = project.scenes[idx];
+    if (!scene || scene.sourceType !== "html") return;
+    const doc = fullIframeRef.current?.contentDocument;
+    if (!doc) return;
+    try {
+      doc.open();
+      doc.write(CTRL + scene.html);
+      doc.close();
+      fullLoadedSceneIdx.current = idx;
+      // Seek to local time after animations are registered (2 frames)
+      if (seekMs && seekMs > 0) {
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => fullWvc("seek", seekMs))
+        );
+      }
+    } catch {}
+  };
+
+  // Open modal: initialise iframe then start playing
+  useEffect(() => {
+    if (!showFullPreview) {
+      if (fullRafRef.current) cancelAnimationFrame(fullRafRef.current);
+      setFullIsPlaying(false);
+      return;
+    }
+    fullLoadedSceneIdx.current = -1;
+    setFullPlayhead(0);
+    setFullIsPlaying(false); // RAF effect will start it after iframe ready
+
+    const iframe = fullIframeRef.current;
+    if (!iframe) return;
+
+    const init = () => {
+      writeFullScene(0);
+      setFullIsPlaying(true);
+      fullPlayOrigin.current = { time: performance.now(), ms: 0 };
+    };
+
+    if (
+      iframe.contentDocument?.readyState === "complete" ||
+      iframe.contentDocument?.readyState === "interactive"
+    ) {
+      init();
+      return;
+    }
+    iframe.addEventListener("load", init, { once: true });
+    return () => iframe.removeEventListener("load", init);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showFullPreview]);
+
+  // RAF loop for full preview
+  useEffect(() => {
+    if (!fullIsPlaying) return;
+    const tick = (now: number) => {
+      const elapsed = now - fullPlayOrigin.current.time;
+      const cur = fullPlayOrigin.current.ms + elapsed;
+      if (cur >= totalDuration) {
+        setFullPlayhead(totalDuration);
+        setFullIsPlaying(false);
+        return;
+      }
+      setFullPlayhead(cur);
+      fullRafRef.current = requestAnimationFrame(tick);
+    };
+    fullPlayOrigin.current = { time: performance.now(), ms: fullPlayhead };
+    fullRafRef.current = requestAnimationFrame(tick);
+    return () => { if (fullRafRef.current) cancelAnimationFrame(fullRafRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullIsPlaying]);
+
+  // Pause iframe animations when paused
+  useEffect(() => {
+    if (!fullIsPlaying) fullWvc("pause");
+  }, [fullIsPlaying]); // eslint-disable-line
+
+  // Auto-switch scene when playhead crosses a boundary
+  useEffect(() => {
+    if (!showFullPreview) return;
+    if (fullSceneIdx === fullLoadedSceneIdx.current) return;
+    writeFullScene(fullSceneIdx);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullSceneIdx, showFullPreview]);
+
+  const handleFullSeek = (ms: number) => {
+    const clipped = Math.max(0, Math.min(ms, totalDuration));
+    setFullPlayhead(clipped);
+    const targetIdx = sceneOffsets.findIndex((o) => clipped < o.end);
+    const idx = targetIdx >= 0 ? targetIdx : project.scenes.length - 1;
+    const localMs = clipped - (sceneOffsets[idx]?.start ?? 0);
+
+    if (idx === fullLoadedSceneIdx.current) {
+      fullWvc("seek", localMs);
+    } else {
+      writeFullScene(idx, localMs);
+    }
+    if (fullIsPlaying) {
+      fullPlayOrigin.current = { time: performance.now(), ms: clipped };
+    }
+  };
+
+  const toggleFullPlay = () => {
+    if (fullIsPlaying) {
+      setFullIsPlaying(false);
+    } else {
+      if (fullPlayhead >= totalDuration) {
+        // restart
+        writeFullScene(0);
+        setFullPlayhead(0);
+        fullPlayOrigin.current = { time: performance.now(), ms: 0 };
+      } else {
+        fullWvc("play");
+        fullPlayOrigin.current = { time: performance.now(), ms: fullPlayhead };
+      }
+      setFullIsPlaying(true);
+    }
+  };
+
+  const handleFullRestart = () => {
+    writeFullScene(0);
+    setFullPlayhead(0);
+    fullPlayOrigin.current = { time: performance.now(), ms: 0 };
+    setFullIsPlaying(true);
+  };
+
+  // ── / Full Preview ───────────────────────────────────────
+
   const iframeSrc = selected?.sourceType === "url" && selected.url
     ? selected.url
     : "about:blank";
@@ -474,6 +638,14 @@ export default function App() {
 
       {/* Bảng thuộc tính */}
       <aside className="props">
+        <div className="props-actions">
+          <button onClick={() => setShowFullPreview(true)} className="btn-full-preview">
+            ▶ Xem trước
+          </button>
+          <button onClick={handleRender} disabled={busy} className="btn-primary">
+            🚀 Xuất
+          </button>
+        </div>
         <div className="panel-header">
           <h2>Thuộc tính</h2>
         </div>
@@ -807,15 +979,91 @@ export default function App() {
         </div>
       )}
 
+      {/* Full Preview Modal */}
+      {showFullPreview && (
+        <div className="full-preview-overlay" onClick={() => setShowFullPreview(false)}>
+          <div className="full-preview-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="full-preview-header">
+              <span className="full-preview-title">Xem trước tổng · {project.scenes.length} cảnh · {fmt(totalDuration)}</span>
+              <button className="btn-close-modal" onClick={() => setShowFullPreview(false)}>✕</button>
+            </div>
+
+            <div className="full-preview-stage">
+              <div
+                className="full-preview-container"
+                style={{
+                  width: project.width / 2,
+                  height: project.height / 2,
+                  background: project.scenes[fullSceneIdx]?.background ?? "#000",
+                }}
+              >
+                <iframe
+                  ref={fullIframeRef}
+                  src="about:blank"
+                  title="xem trước tổng"
+                  style={{
+                    width: project.width,
+                    height: project.height,
+                    border: "none",
+                    transform: "scale(0.5)",
+                    transformOrigin: "top left",
+                    background: "transparent",
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Scene markers timeline */}
+            <div className="full-timeline">
+              {project.scenes.map((scene, i) => {
+                const off = sceneOffsets[i];
+                const pct = totalDuration > 0 ? (off.end - off.start) / totalDuration * 100 : 0;
+                return (
+                  <div
+                    key={scene.id}
+                    className={`full-scene-seg${i === fullSceneIdx ? " active" : ""}`}
+                    style={{ width: `${pct}%` }}
+                    onClick={() => handleFullSeek(off.start)}
+                    title={`${scene.name} (${fmt(off.end - off.start)})`}
+                  >
+                    <span className="full-scene-label">{scene.name}</span>
+                  </div>
+                );
+              })}
+              <div
+                className="full-playhead-marker"
+                style={{ left: totalDuration > 0 ? `${fullPlayhead / totalDuration * 100}%` : "0%" }}
+              />
+            </div>
+
+            {/* Controls */}
+            <div className="full-preview-controls">
+              <button className="ctrl-btn" onClick={handleFullRestart} title="Bắt đầu lại">↺</button>
+              <button className="ctrl-btn ctrl-play" onClick={toggleFullPlay} title={fullIsPlaying ? "Tạm dừng" : "Phát"}>
+                {fullIsPlaying ? "⏸" : "▶"}
+              </button>
+              <span className="ctrl-time">{fmt(fullPlayhead)}</span>
+              <input
+                className="ctrl-seek"
+                type="range"
+                min={0}
+                max={totalDuration}
+                step={100}
+                value={Math.min(fullPlayhead, totalDuration)}
+                onChange={(e) => handleFullSeek(Number(e.target.value))}
+              />
+              <span className="ctrl-time ctrl-total">{fmt(totalDuration)}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Timeline — Scene Track (bottom) */}
       <aside className="sidebar">
         <div className="timeline-controls">
           <span className="timeline-label">Cảnh ({project.scenes.length})</span>
           <button onClick={() => setShowTemplates(true)} className="btn-template">📋 Template</button>
           <button onClick={addScene} className="btn-secondary">+ Thêm</button>
-          <button onClick={handleRender} disabled={busy} className="btn-primary">
-            🚀 Xuất
-          </button>
         </div>
         <DndContext collisionDetection={closestCenter} onDragEnd={onDragEnd}>
           <SortableContext

@@ -125,6 +125,24 @@ body {
   color: var(--secondary);
 }
 
+.panel-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.props-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.props-actions .btn-full-preview,
+.props-actions .btn-primary {
+  flex: 1;
+}
+
 .panel-content {
   padding: 20px;
   overflow-y: auto;
@@ -946,4 +964,152 @@ details[open] .prop-section-title::after {
   display: inline-block;
   padding: 3px 10px;
   border-radius: 10px;
+}
+
+/* ── Full Preview Button ── */
+.btn-full-preview {
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: #34d399;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  letter-spacing: 0.2px;
+}
+.btn-full-preview:hover {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(16, 185, 129, 0.6);
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.2);
+}
+
+/* ── Full Preview Modal ── */
+.full-preview-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(10px);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.2s ease;
+}
+
+.full-preview-modal {
+  background: rgba(14, 20, 34, 0.97);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 16px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: 0 32px 80px rgba(0,0,0,0.8);
+  max-width: 95vw;
+  max-height: 95vh;
+  overflow: hidden;
+}
+
+.full-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.full-preview-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.3px;
+}
+
+.full-preview-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.full-preview-container {
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  flex-shrink: 0;
+}
+
+/* Scene marker timeline */
+.full-timeline {
+  position: relative;
+  height: 36px;
+  display: flex;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(0,0,0,0.3);
+}
+
+.full-scene-seg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid rgba(255,255,255,0.1);
+  background: rgba(99, 102, 241, 0.08);
+  cursor: pointer;
+  transition: background 0.15s;
+  overflow: hidden;
+  position: relative;
+}
+
+.full-scene-seg:last-child { border-right: none; }
+
+.full-scene-seg:hover {
+  background: rgba(99, 102, 241, 0.18);
+}
+
+.full-scene-seg.active {
+  background: rgba(99, 102, 241, 0.25);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.full-scene-label {
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 6px;
+  pointer-events: none;
+}
+
+.full-scene-seg.active .full-scene-label {
+  color: var(--text-primary);
+}
+
+.full-playhead-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #f43f5e;
+  box-shadow: 0 0 6px #f43f5e;
+  transform: translateX(-1px);
+  pointer-events: none;
+  transition: left 0.05s linear;
+  z-index: 1;
+}
+
+/* Controls row (reuses ctrl-* classes from single preview) */
+.full-preview-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 10px;
+  padding: 10px 14px;
 }
