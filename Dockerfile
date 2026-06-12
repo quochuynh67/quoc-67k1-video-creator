@@ -25,10 +25,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     # Fonts for headless rendering
     fonts-liberation \
+    # Chromium browser (avoids runtime download by Puppeteer)
+    chromium \
     # Misc utilities
     ca-certificates \
     wget \
     && rm -rf /var/lib/apt/lists/*
+
+ENV CHROMIUM_PATH=/usr/bin/chromium
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
 WORKDIR /app
 

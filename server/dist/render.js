@@ -26,7 +26,13 @@ export async function renderProject(project) {
     const outputDir = path.resolve("output");
     mkdirSync(outputDir, { recursive: true });
     const wvc = new WebVideoCreator();
-    wvc.config({ compatibleRenderingMode: true });
+    wvc.config({
+        compatibleRenderingMode: true,
+        browserDisableDevShm: true,
+        browserUseGPU: false,
+        browserUseAngle: false,
+        ...(process.env.CHROMIUM_PATH && { browserExecutablePath: process.env.CHROMIUM_PATH }),
+    });
     const filename = `render-${Date.now()}.${project.outputFormat}`;
     const outputPath = path.join(outputDir, filename);
     const videoOptions = {
