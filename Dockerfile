@@ -1,49 +1,25 @@
 FROM node:20-slim
 
-# Install Chromium/Puppeteer system dependencies and ffmpeg
+# Chrome system deps + ffmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # GLib / GObject (libgobject-2.0)
-    libglib2.0-0 \
-    # GTK / display stack
-    libgtk-3-0 \
-    libnss3 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libpango-1.0-0 \
-    libpangocairo-1.0-0 \
-    libcairo2 \
-    # Video encoding (libx264) and media processing
-    ffmpeg \
-    # Fonts for headless rendering
-    fonts-liberation \
-    # Misc utilities
-    ca-certificates \
-    wget \
+    libglib2.0-0 libgtk-3-0 libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+    libxrandr2 libgbm1 libasound2 libpango-1.0-0 libpangocairo-1.0-0 libcairo2 \
+    ffmpeg fonts-liberation ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/server
 
-# Copy package files first for better layer caching
-COPY package.json package-lock.json* ./
+# scripts/ must come before npm install so the postinstall patch-wvc.mjs can run
+COPY server/scripts/ ./scripts/
 
-# Install dependencies (postinstall script patches web-video-creator)
+# Install deps (postinstall patches web-video-creator logger to fix util.isString crash)
+COPY server/package.json server/package-lock.json* ./
 RUN npm install
 
-# Copy source and config
-COPY tsconfig.json ./
-COPY src/ ./src/
-COPY scripts/ ./scripts/
-
-# Build TypeScript
+# Copy source and build
+COPY server/tsconfig.json ./
+COPY server/src/ ./src/
 RUN npm run build
 
 EXPOSE 3000
