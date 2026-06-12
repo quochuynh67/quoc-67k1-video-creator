@@ -1,6 +1,6 @@
 import type { Project } from "./types";
 
-export const SERVER_BASE = "https://wvc-editor-server-production.up.railway.app";
+export const SERVER_BASE = "https://quoc-67k1-video-creator.onrender.com";
 
 export async function renderProject(project: Project) {
   const res = await fetch(`${SERVER_BASE}/api/render`, {
