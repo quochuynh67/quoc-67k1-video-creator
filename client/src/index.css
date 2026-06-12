@@ -309,6 +309,97 @@ button.btn-secondary {
   color: #22d3ee;
 }
 
+/* Preview Controller */
+.preview-controller {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 10px 16px;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 640px;
+}
+
+.ctrl-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  font-size: 1rem;
+  padding: 0;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ctrl-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-hover);
+  transform: none;
+}
+
+.ctrl-play {
+  background: var(--primary);
+  border-color: var(--primary);
+  font-size: 0.9rem;
+}
+
+.ctrl-play:hover {
+  background: #4f46e5;
+  border-color: #4f46e5;
+}
+
+.ctrl-seek {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  padding: 0;
+  border: none;
+  width: auto;
+}
+
+.ctrl-seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--primary);
+  cursor: pointer;
+  box-shadow: 0 0 0 3px rgba(99,102,241,0.25);
+}
+
+.ctrl-seek::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+}
+
+.ctrl-time {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--secondary);
+  min-width: 36px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.ctrl-total {
+  color: var(--text-muted);
+}
+
 /* Preview Pane */
 .preview {
   grid-area: preview;

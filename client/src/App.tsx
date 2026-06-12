@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DndContext, closestCenter } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -142,6 +142,14 @@ function PropSection({
   );
 }
 
+// Injected into every iframe write — exposes window.__wvc for animation control
+const CTRL = `<script>(function(){var g=function(){return document.getAnimations?document.getAnimations():[]};window.__wvc={play:function(){g().forEach(function(a){a.play()})},pause:function(){g().forEach(function(a){a.pause()})},seek:function(t){g().forEach(function(a){a.currentTime=t})}}})();</script>`;
+
+const fmt = (ms: number) => {
+  const s = ms / 1000;
+  return `${s.toFixed(1)}s`;
+};
+
 export default function App() {
   const [project, setProject] = useState<Project>(initialProject);
   const [selectedId, setSelectedId] = useState(project.scenes[0].id);
@@ -149,35 +157,139 @@ export default function App() {
   const [renderFilename, setRenderFilename] = useState<string | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(true);
+  const [playhead, setPlayhead] = useState(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSceneId = useRef("");
+  const rafRef = useRef<number | null>(null);
+  // Tracks { time: performance.now(), playhead: ms } at the moment play started
+  const playOrigin = useRef({ time: 0, ms: 0 });
 
   const selected = useMemo(
     () => project.scenes.find((s) => s.id === selectedId) ?? project.scenes[0],
     [project, selectedId]
   );
 
-  // Realtime preview: push HTML directly into the iframe without remounting
-  const updatePreviewContent = useCallback((html: string) => {
+  const duration = selected?.duration ?? 4000;
+
+  // Call a method on the iframe's __wvc controller
+  const wvc = (method: "play" | "pause" | "seek", arg?: number) => {
+    try {
+      const api = (iframeRef.current?.contentWindow as any)?.__wvc;
+      if (api) arg !== undefined ? api[method](arg) : api[method]();
+    } catch {}
+  };
+
+  const writeToIframe = (html: string) => {
+    const doc = iframeRef.current?.contentDocument;
+    if (!doc) return;
+    try {
+      doc.open();
+      doc.write(CTRL + html);
+      doc.close();
+    } catch {}
+  };
+
+  // RAF loop — runs while isPlaying
+  useEffect(() => {
+    if (!isPlaying) return;
+    const tick = (now: number) => {
+      const elapsed = now - playOrigin.current.time;
+      const cur = playOrigin.current.ms + elapsed;
+      if (cur >= duration) {
+        setPlayhead(duration);
+        setIsPlaying(false);
+        return;
+      }
+      setPlayhead(cur);
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    playOrigin.current = { time: performance.now(), ms: playhead };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying]);
+
+  // Pause the iframe animations when not playing
+  useEffect(() => {
+    if (!isPlaying) wvc("pause");
+  }, [isPlaying]);
+
+  // Scene switch: write content + reset playhead
+  useEffect(() => {
+    if (selected?.sourceType !== "html") return;
     const iframe = iframeRef.current;
     if (!iframe) return;
-    try {
-      const doc = iframe.contentDocument;
-      if (doc) {
-        doc.open();
-        doc.write(html);
-        doc.close();
-      }
-    } catch {
-      // cross-origin sandbox — fallback, iframe will update via srcDoc naturally
-    }
-  }, []);
 
-  // Sync preview when selected scene's HTML changes
-  useEffect(() => {
-    if (selected?.sourceType === "html") {
-      updatePreviewContent(selected.html ?? "");
+    const write = () => {
+      writeToIframe(selected.html ?? "");
+      setPlayhead(0);
+      setIsPlaying(true);
+      playOrigin.current = { time: performance.now(), ms: 0 };
+    };
+
+    if (
+      iframe.contentDocument?.readyState === "complete" ||
+      iframe.contentDocument?.readyState === "interactive"
+    ) {
+      write();
+      return;
     }
-  }, [selected?.html, selected?.sourceType, updatePreviewContent]);
+    iframe.addEventListener("load", write, { once: true });
+    return () => iframe.removeEventListener("load", write);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
+  const togglePlay = () => {
+    if (isPlaying) {
+      setIsPlaying(false);
+    } else {
+      if (playhead >= duration) {
+        // Restart from beginning
+        writeToIframe(selected?.html ?? "");
+        setPlayhead(0);
+        playOrigin.current = { time: performance.now(), ms: 0 };
+      } else {
+        playOrigin.current = { time: performance.now(), ms: playhead };
+      }
+      setIsPlaying(true);
+    }
+  };
+
+  const handleSeek = (ms: number) => {
+    setPlayhead(ms);
+    wvc("seek", ms);
+    if (isPlaying) {
+      // Update origin so RAF continues from new position
+      playOrigin.current = { time: performance.now(), ms };
+    }
+  };
+
+  const handleRestart = () => {
+    writeToIframe(selected?.html ?? "");
+    setPlayhead(0);
+    setIsPlaying(true);
+    playOrigin.current = { time: performance.now(), ms: 0 };
+  };
+
+  // Typing: debounce preview update so animations aren't restarted on every keystroke
+  useEffect(() => {
+    if (selected?.sourceType !== "html") return;
+    // Skip on scene switch — the effect above handles that
+    if (lastSceneId.current !== selectedId) {
+      lastSceneId.current = selectedId;
+      return;
+    }
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    debounceTimer.current = setTimeout(() => {
+      writeToIframe(selected.html ?? "");
+    }, 400);
+    return () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.html]);
 
   const updateProject = (patch: Partial<Project>) =>
     setProject((p) => ({ ...p, ...patch }));
@@ -271,9 +383,9 @@ export default function App() {
     }
   };
 
-  const iframeUrlProps = selected?.sourceType === "url" && selected.url
-    ? { src: selected.url }
-    : {};
+  const iframeSrc = selected?.sourceType === "url" && selected.url
+    ? selected.url
+    : "about:blank";
 
   return (
     <div className="app">
@@ -289,8 +401,8 @@ export default function App() {
           <iframe
             ref={iframeRef}
             key={selected?.id}
+            src={iframeSrc}
             title="xem trước"
-            {...iframeUrlProps}
             style={{
               width: project.width,
               height: project.height,
@@ -301,6 +413,27 @@ export default function App() {
             }}
           />
         </div>
+
+        {/* Preview Controller */}
+        {selected?.sourceType === "html" && (
+          <div className="preview-controller">
+            <button className="ctrl-btn" onClick={handleRestart} title="Bắt đầu lại">↺</button>
+            <button className="ctrl-btn ctrl-play" onClick={togglePlay} title={isPlaying ? "Tạm dừng" : "Phát"}>
+              {isPlaying ? "⏸" : "▶"}
+            </button>
+            <span className="ctrl-time">{fmt(playhead)}</span>
+            <input
+              className="ctrl-seek"
+              type="range"
+              min={0}
+              max={duration}
+              step={100}
+              value={Math.min(playhead, duration)}
+              onChange={(e) => handleSeek(Number(e.target.value))}
+            />
+            <span className="ctrl-time ctrl-total">{fmt(duration)}</span>
+          </div>
+        )}
 
         {(busy || renderFilename || renderError) && (
           <div className="render-overlay">
