@@ -7,22 +7,13 @@ import { renderProject } from "./render.js";
 import type { Project } from "./types.js";
 
 const app = express();
-app.use(cors({
-  origin: (origin, callback) => {
-    const allowed = process.env.ALLOWED_ORIGINS
-      ? process.env.ALLOWED_ORIGINS.split(",").map(o => o.trim())
-      : ["https://quoc-67k1-video-creator.vercel.app"];
-    if (!origin || allowed.includes(origin) || allowed.includes("*")) {
-      callback(null, true);
-    } else {
-      callback(new Error(`CORS: origin ${origin} not allowed`));
-    }
-  },
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true,
-}));
-app.options("*", cors());
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (req.method === "OPTIONS") { res.sendStatus(204); return; }
+  next();
+});
 app.use(express.json({ limit: "50mb" }));
 
 const uploadDir = path.resolve("uploads");
