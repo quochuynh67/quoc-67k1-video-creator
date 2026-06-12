@@ -1,9 +1,9 @@
 import type { Project } from "./types";
 
-const BASE = "http://localhost:3001";
+export const SERVER_BASE = "https://wvc-editor-server-production.up.railway.app";
 
 export async function renderProject(project: Project) {
-  const res = await fetch(`${BASE}/api/render`, {
+  const res = await fetch(`${SERVER_BASE}/api/render`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(project)
@@ -16,5 +16,5 @@ export async function renderProject(project: Project) {
 }
 
 export function getDownloadUrl(filename: string) {
-  return `${BASE}/output/${filename}`;
+  return `${SERVER_BASE}/output/${filename}`;
 }

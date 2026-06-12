@@ -42,8 +42,9 @@ app.post("/api/render", async (req, res) => {
   }
 });
 
-const PORT = 3001;
-app.listen(PORT, () => {
-  console.log(`API server running on http://localhost:${PORT}`);
-  console.log(`Serving render output from ${path.resolve("output")}`);
+app.get("/api/health", (_req, res) => res.json({ ok: true }));
+
+const PORT = Number(process.env.PORT ?? 3001);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`API server running on port ${PORT}`);
 });

@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { SERVER_BASE } from "../lib/api";
 
 interface Props {
   value: string;
@@ -18,9 +19,9 @@ export function FileOrUrlInput({ value, onChange, accept, placeholder }: Props) 
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch("http://localhost:3001/api/upload", { method: "POST", body: fd });
+      const res = await fetch(`${SERVER_BASE}/api/upload`, { method: "POST", body: fd });
       const data = await res.json();
-      if (data.ok) onChange(`http://localhost:3001${data.path}`);
+      if (data.ok) onChange(`${SERVER_BASE}${data.path}`);
     } catch {}
     setUploading(false);
     e.target.value = "";
