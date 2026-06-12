@@ -30,22 +30,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app/server
+WORKDIR /app
 
-# Copy package files first for better layer caching
+# Copy root package files for workspace-aware install
 COPY package.json package-lock.json* ./
 
-# Install dependencies (postinstall script patches web-video-creator)
-RUN npm install
+# Copy workspace package files (needed before npm ci)
+COPY client/package.json ./client/
+COPY server/package.json ./server/
 
-# Copy source and config
-COPY tsconfig.json ./
-COPY src/ ./src/
-COPY scripts/ ./scripts/
+# Install all workspace dependencies
+RUN npm ci
 
-# Build TypeScript
-RUN npm run build
+# Copy the rest of the project
+COPY . .
+
+# Build the server workspace
+RUN npm run build --workspace=wvc-editor-server
 
 EXPOSE 3001
 
-CMD ["node", "dist/index.js"]
+CMD ["npm", "run", "start", "--workspace=wvc-editor-server"]
