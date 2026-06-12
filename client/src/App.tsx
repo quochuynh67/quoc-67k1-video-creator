@@ -212,12 +212,17 @@ export default function App() {
 
   const duration = selected?.duration ?? 4000;
 
-  // Scale preview iframe to fit container
+  // Measure .preview area → compute fixed scale for the container
   useEffect(() => {
     const el = previewContainerRef.current;
     if (!el) return;
-    const update = () =>
-      setPreviewScale(Math.min(el.clientWidth / project.width, el.clientHeight / project.height, 1));
+    const update = () => {
+      const pad = 32;
+      const reservedH = 80; // info bar + controller
+      const availW = el.clientWidth - pad * 2;
+      const availH = el.clientHeight - reservedH;
+      setPreviewScale(Math.min(availW / project.width, availH / project.height, 1));
+    };
     update();
     const obs = new ResizeObserver(update);
     obs.observe(el);
@@ -674,15 +679,18 @@ export default function App() {
   return (
     <div className="app">
       {/* Preview */}
-      <main className="preview">
+      <main ref={previewContainerRef} className="preview">
         <div className="preview-info">
           <span>Viewport: <span>{project.width}x{project.height}</span> · {project.fps}fps</span>
           <button className="btn-mobile-props" onClick={() => setShowMobileProps(true)}>⚙ Thuộc tính</button>
         </div>
         <div
-          ref={previewContainerRef}
           className="preview-container"
-          style={{ background: selected?.background }}
+          style={{
+            width: Math.round(project.width * previewScale),
+            height: Math.round(project.height * previewScale),
+            background: selected?.background,
+          }}
         >
           <iframe
             ref={iframeRef}
