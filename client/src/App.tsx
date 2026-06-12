@@ -144,7 +144,7 @@ function PropSection({
 }
 
 // Injected into every iframe write — exposes window.__wvc for animation control
-const CTRL = `<script>(function(){var g=function(){return document.getAnimations?document.getAnimations():[]};window.__wvc={play:function(){g().forEach(function(a){a.play()})},pause:function(){g().forEach(function(a){a.pause()})},seek:function(t){g().forEach(function(a){a.currentTime=t})}}})();</script>`;
+const CTRL = `<style>html,body{margin:0;padding:0;overflow:hidden;width:100%;height:100%}</style><script>(function(){var g=function(){return document.getAnimations?document.getAnimations():[]};window.__wvc={play:function(){g().forEach(function(a){a.play()})},pause:function(){g().forEach(function(a){a.pause()})},seek:function(t){g().forEach(function(a){a.currentTime=t})}}})();</script>`;
 
 const fmt = (ms: number) => {
   const s = ms / 1000;
@@ -158,8 +158,6 @@ export default function App() {
   const [renderFilename, setRenderFilename] = useState<string | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(true);
-  const [playhead, setPlayhead] = useState(0);
   // Full preview state
   const [showFullPreview, setShowFullPreview] = useState(false);
   const [fullPlayhead, setFullPlayhead] = useState(0);
@@ -177,6 +175,7 @@ export default function App() {
   const lastSceneId = useRef("");
   const rafRef = useRef<number | null>(null);
   const playOrigin = useRef({ time: 0, ms: 0 });
+  const mainLoadedSceneIdx = useRef(-1);
   // Full preview refs
   const fullIframeRefA = useRef<HTMLIFrameElement>(null);
   const fullIframeRefB = useRef<HTMLIFrameElement>(null);
@@ -210,17 +209,14 @@ export default function App() {
     return i >= 0 ? i : project.scenes.length - 1;
   }, [fullPlayhead, sceneOffsets, project.scenes.length]);
 
-  const duration = selected?.duration ?? 4000;
-
   // Measure .preview area → compute fixed scale for the container
   useEffect(() => {
     const el = previewContainerRef.current;
     if (!el) return;
     const update = () => {
-      const pad = 32;
-      const reservedH = 80; // info bar + controller
-      const availW = el.clientWidth - pad * 2;
-      const availH = el.clientHeight - reservedH;
+      // 52px top (info bar) + 20px bottom padding + 16px gap + 56px controller (34px btn + 20px padding + 2px border)
+      const availW = el.clientWidth - 40;
+      const availH = el.clientHeight - 144;
       setPreviewScale(Math.min(availW / project.width, availH / project.height, 1));
     };
     update();
@@ -260,42 +256,57 @@ export default function App() {
     } catch {}
   };
 
-  // RAF loop — runs while isPlaying
+  // RAF loop — plays through all scenes using fullPlayhead / totalDuration
   useEffect(() => {
-    if (!isPlaying) return;
+    if (!fullIsPlaying) return;
     const tick = (now: number) => {
       const elapsed = now - playOrigin.current.time;
       const cur = playOrigin.current.ms + elapsed;
-      if (cur >= duration) {
-        setPlayhead(duration);
-        setIsPlaying(false);
+      if (cur >= totalDuration) {
+        setFullPlayhead(totalDuration);
+        setFullIsPlaying(false);
         return;
       }
-      setPlayhead(cur);
+      setFullPlayhead(cur);
       rafRef.current = requestAnimationFrame(tick);
     };
-    playOrigin.current = { time: performance.now(), ms: playhead };
+    playOrigin.current = { time: performance.now(), ms: fullPlayhead };
     rafRef.current = requestAnimationFrame(tick);
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlaying]);
+  }, [fullIsPlaying]);
 
-  // Pause the iframe animations when not playing
+  // Pause main iframe animations when stopped
   useEffect(() => {
-    if (!isPlaying) wvc("pause");
-  }, [isPlaying]);
+    if (!fullIsPlaying) wvc("pause");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullIsPlaying]);
 
-  // Scene switch: write content + reset playhead
+  // Auto-switch scene in main preview when playhead crosses a boundary
+  useEffect(() => {
+    if (!fullIsPlaying) return;
+    if (fullSceneIdx === mainLoadedSceneIdx.current) return;
+    const scene = project.scenes[fullSceneIdx];
+    if (!scene || scene.sourceType !== "html") { mainLoadedSceneIdx.current = fullSceneIdx; return; }
+    writeToIframe(scene.html);
+    mainLoadedSceneIdx.current = fullSceneIdx;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullSceneIdx, fullIsPlaying]);
+
+  // Scene click: write scene + seek playhead to scene start
   useEffect(() => {
     if (selected?.sourceType !== "html") return;
     const iframe = iframeRef.current;
     if (!iframe) return;
+    const idx = project.scenes.findIndex((s) => s.id === selectedId);
+    const sceneStart = sceneOffsets[idx]?.start ?? 0;
 
     const write = () => {
       writeToIframe(selected.html ?? "");
-      setPlayhead(0);
-      setIsPlaying(true);
-      playOrigin.current = { time: performance.now(), ms: 0 };
+      mainLoadedSceneIdx.current = idx;
+      setFullPlayhead(sceneStart);
+      setFullIsPlaying(false);
+      playOrigin.current = { time: performance.now(), ms: sceneStart };
     };
 
     if (
@@ -311,35 +322,49 @@ export default function App() {
   }, [selectedId]);
 
   const togglePlay = () => {
-    if (isPlaying) {
-      setIsPlaying(false);
+    if (fullIsPlaying) {
+      setFullIsPlaying(false);
     } else {
-      if (playhead >= duration) {
-        // Restart from beginning
-        writeToIframe(selected?.html ?? "");
-        setPlayhead(0);
+      if (fullPlayhead >= totalDuration) {
+        const scene0 = project.scenes[0];
+        if (scene0?.sourceType === "html") { writeToIframe(scene0.html); mainLoadedSceneIdx.current = 0; }
+        setFullPlayhead(0);
         playOrigin.current = { time: performance.now(), ms: 0 };
       } else {
-        playOrigin.current = { time: performance.now(), ms: playhead };
+        const localMs = fullPlayhead - (sceneOffsets[fullSceneIdx]?.start ?? 0);
+        wvc("play");
+        wvc("seek", localMs);
+        playOrigin.current = { time: performance.now(), ms: fullPlayhead };
       }
-      setIsPlaying(true);
+      setFullIsPlaying(true);
     }
   };
 
   const handleSeek = (ms: number) => {
-    setPlayhead(ms);
-    wvc("seek", ms);
-    if (isPlaying) {
-      // Update origin so RAF continues from new position
-      playOrigin.current = { time: performance.now(), ms };
+    const clipped = Math.max(0, Math.min(ms, totalDuration));
+    setFullPlayhead(clipped);
+    const tIdx = sceneOffsets.findIndex((o) => clipped < o.end);
+    const idx = tIdx >= 0 ? tIdx : project.scenes.length - 1;
+    const localMs = clipped - (sceneOffsets[idx]?.start ?? 0);
+    if (idx !== mainLoadedSceneIdx.current) {
+      const scene = project.scenes[idx];
+      if (scene?.sourceType === "html") {
+        writeToIframe(scene.html);
+        mainLoadedSceneIdx.current = idx;
+        requestAnimationFrame(() => requestAnimationFrame(() => wvc("seek", localMs)));
+      }
+    } else {
+      wvc("seek", localMs);
     }
+    if (fullIsPlaying) playOrigin.current = { time: performance.now(), ms: clipped };
   };
 
   const handleRestart = () => {
-    writeToIframe(selected?.html ?? "");
-    setPlayhead(0);
-    setIsPlaying(true);
+    const scene0 = project.scenes[0];
+    if (scene0?.sourceType === "html") { writeToIframe(scene0.html); mainLoadedSceneIdx.current = 0; }
+    setFullPlayhead(0);
     playOrigin.current = { time: performance.now(), ms: 0 };
+    setFullIsPlaying(true);
   };
 
   // Typing: debounce preview update so animations aren't restarted on every keystroke
@@ -697,6 +722,7 @@ export default function App() {
             key={selected?.id}
             src={iframeSrc}
             title="xem trước"
+            scrolling="no"
             style={{
               width: project.width,
               height: project.height,
@@ -704,28 +730,30 @@ export default function App() {
               transform: `scale(${previewScale})`,
               transformOrigin: "top left",
               background: "transparent",
+              overflow: "hidden",
+              display: "block",
             }}
           />
         </div>
 
-        {/* Preview Controller */}
-        {selected?.sourceType === "html" && (
+        {/* Preview Controller — spans all scenes */}
+        {totalDuration > 0 && (
           <div className="preview-controller">
             <button className="ctrl-btn" onClick={handleRestart} title="Bắt đầu lại">↺</button>
-            <button className="ctrl-btn ctrl-play" onClick={togglePlay} title={isPlaying ? "Tạm dừng" : "Phát"}>
-              {isPlaying ? "⏸" : "▶"}
+            <button className="ctrl-btn ctrl-play" onClick={togglePlay} title={fullIsPlaying ? "Tạm dừng" : "Phát"}>
+              {fullIsPlaying ? "⏸" : "▶"}
             </button>
-            <span className="ctrl-time">{fmt(playhead)}</span>
+            <span className="ctrl-time">{fmt(fullPlayhead)}</span>
             <input
               className="ctrl-seek"
               type="range"
               min={0}
-              max={duration}
+              max={totalDuration}
               step={100}
-              value={Math.min(playhead, duration)}
+              value={Math.min(fullPlayhead, totalDuration)}
               onChange={(e) => handleSeek(Number(e.target.value))}
             />
-            <span className="ctrl-time ctrl-total">{fmt(duration)}</span>
+            <span className="ctrl-time ctrl-total">{fmt(totalDuration)}</span>
           </div>
         )}
 
