@@ -1,6 +1,8 @@
 import express from "express";
 import cors from "cors";
 import path from "node:path";
+import { mkdirSync } from "node:fs";
+import multer from "multer";
 import { renderProject } from "./render.js";
 import type { Project } from "./types.js";
 
@@ -8,8 +10,26 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 
-// Serve the compiled videos statically
+const uploadDir = path.resolve("uploads");
+mkdirSync(uploadDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, uploadDir),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+  },
+});
+const upload = multer({ storage });
+
+// Serve static assets
 app.use("/output", express.static(path.resolve("output")));
+app.use("/uploads", express.static(uploadDir));
+
+app.post("/api/upload", upload.single("file"), (req, res) => {
+  if (!req.file) { res.status(400).json({ ok: false, error: "No file" }); return; }
+  res.json({ ok: true, path: `/uploads/${req.file.filename}`, filename: req.file.filename });
+});
 
 app.post("/api/render", async (req, res) => {
   try {

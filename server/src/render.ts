@@ -86,8 +86,22 @@ export async function renderProject(project: Project) {
   }
 
   const validAudios = (project.audios ?? []).filter((a) => a.path?.trim());
-  if (validAudios.length) {
-    video.addAudios(validAudios.map((a) => ({
+  const tempAudioPaths: string[] = [];
+  const resolvedAudios = await Promise.all(
+    validAudios.map(async (a) => {
+      let resolvedPath = a.path;
+      if (a.path.startsWith("http://") || a.path.startsWith("https://")) {
+        const ext = a.path.split("?")[0].split(".").pop() || "mp3";
+        const tmp = path.join(os.tmpdir(), `wvc-audio-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`);
+        await downloadToTemp(a.path, tmp);
+        tempAudioPaths.push(tmp);
+        resolvedPath = tmp;
+      }
+      return { ...a, path: resolvedPath };
+    })
+  );
+  if (resolvedAudios.length) {
+    video.addAudios(resolvedAudios.map((a) => ({
       path: a.path,
       loop: a.loop,
       volume: a.volume,
@@ -106,9 +120,8 @@ export async function renderProject(project: Project) {
     video.start();
   });
 
-  if (tempCoverPath) {
-    unlink(tempCoverPath).catch(() => {});
-  }
+  if (tempCoverPath) unlink(tempCoverPath).catch(() => {});
+  for (const p of tempAudioPaths) unlink(p).catch(() => {});
 
   return { filename, outputPath };
 }

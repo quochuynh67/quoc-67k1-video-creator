@@ -8,6 +8,7 @@ import {
 import { renderProject, getDownloadUrl } from "./lib/api";
 import type { Project, Scene, AudioTrack, FontEntry } from "./lib/types";
 import { SceneListItem } from "./components/SceneList";
+import { FileOrUrlInput } from "./components/FileOrUrlInput";
 import { TEMPLATES, instantiateTemplate } from "./lib/templates";
 
 const uid = () => crypto.randomUUID();
@@ -163,17 +164,27 @@ export default function App() {
   const [showFullPreview, setShowFullPreview] = useState(false);
   const [fullPlayhead, setFullPlayhead] = useState(0);
   const [fullIsPlaying, setFullIsPlaying] = useState(false);
+  const [fullFrontSlot, setFullFrontSlot] = useState<"a" | "b">("a");
+  const [fullTransition, setFullTransition] = useState<{ type: string; dur: number; incoming: "a" | "b" } | null>(null);
+
+  const [showMobileProps, setShowMobileProps] = useState(false);
+  const [previewScale, setPreviewScale] = useState(0.5);
+  const [fullPreviewScale, setFullPreviewScale] = useState(0.5);
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const previewContainerRef = useRef<HTMLDivElement>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSceneId = useRef("");
   const rafRef = useRef<number | null>(null);
   const playOrigin = useRef({ time: 0, ms: 0 });
   // Full preview refs
-  const fullIframeRef = useRef<HTMLIFrameElement>(null);
+  const fullIframeRefA = useRef<HTMLIFrameElement>(null);
+  const fullIframeRefB = useRef<HTMLIFrameElement>(null);
+  const fullActiveSlot = useRef<"a" | "b">("a");
   const fullRafRef = useRef<number | null>(null);
   const fullPlayOrigin = useRef({ time: 0, ms: 0 });
   const fullLoadedSceneIdx = useRef(-1);
+  const fullTransitionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const selected = useMemo(
     () => project.scenes.find((s) => s.id === selectedId) ?? project.scenes[0],
@@ -200,6 +211,31 @@ export default function App() {
   }, [fullPlayhead, sceneOffsets, project.scenes.length]);
 
   const duration = selected?.duration ?? 4000;
+
+  // Scale preview iframe to fit container
+  useEffect(() => {
+    const el = previewContainerRef.current;
+    if (!el) return;
+    const update = () =>
+      setPreviewScale(Math.min(el.clientWidth / project.width, el.clientHeight / project.height, 1));
+    update();
+    const obs = new ResizeObserver(update);
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [project.width, project.height]);
+
+  // Scale full preview modal iframes based on window size
+  useEffect(() => {
+    if (!showFullPreview) return;
+    const update = () => {
+      const maxW = window.innerWidth * 0.86;
+      const maxH = window.innerHeight * 0.52;
+      setFullPreviewScale(Math.min(maxW / project.width, maxH / project.height, 0.75));
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [showFullPreview, project.width, project.height]);
 
   // Call a method on the iframe's __wvc controller
   const wvc = (method: "play" | "pause" | "seek", arg?: number) => {
@@ -413,48 +449,103 @@ export default function App() {
 
   // ── Full Preview ────────────────────────────────────────
 
+  const TRANS_CSS: Record<string, string> = {
+    fade: "fade", fadeblack: "fadeblack", fadewhite: "fadewhite",
+    slideleft: "slideleft", slideright: "slideright",
+    slideup: "slideup", slidedown: "slidedown",
+    wipeleft: "wipeleft", wiperight: "wiperight",
+    wipeup: "wipeup", wipedown: "wipedown",
+    zoomin: "zoomin",
+  };
+  const cssTrans = (id: string) => TRANS_CSS[id] ?? "fade";
+
+  const getSlotIframe = (slot: "a" | "b") =>
+    slot === "a" ? fullIframeRefA.current : fullIframeRefB.current;
+
   const fullWvc = (method: "play" | "pause" | "seek", arg?: number) => {
     try {
-      const api = (fullIframeRef.current?.contentWindow as any)?.__wvc;
+      const api = (getSlotIframe(fullActiveSlot.current)?.contentWindow as any)?.__wvc;
       if (api) arg !== undefined ? api[method](arg) : api[method]();
     } catch {}
   };
 
-  const writeFullScene = (idx: number, seekMs?: number) => {
+  const writeSlot = (slot: "a" | "b", html: string) => {
+    const doc = getSlotIframe(slot)?.contentDocument;
+    if (!doc) return;
+    doc.open(); doc.write(CTRL + html); doc.close();
+  };
+
+  const cancelFullTransition = () => {
+    if (fullTransitionTimer.current) clearTimeout(fullTransitionTimer.current);
+    setFullTransition(null);
+  };
+
+  // Write a scene to the active slot directly (no transition — for seek / restart / init)
+  const writeFullSceneDirect = (idx: number, seekMs?: number) => {
+    cancelFullTransition();
     const scene = project.scenes[idx];
     if (!scene || scene.sourceType !== "html") return;
-    const doc = fullIframeRef.current?.contentDocument;
-    if (!doc) return;
-    try {
-      doc.open();
-      doc.write(CTRL + scene.html);
-      doc.close();
+    writeSlot(fullActiveSlot.current, scene.html);
+    fullLoadedSceneIdx.current = idx;
+    if (seekMs && seekMs > 0) {
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => fullWvc("seek", seekMs))
+      );
+    }
+  };
+
+  // Switch to a new scene using the outgoing scene's transition (if any)
+  const writeFullScene = (idx: number, seekMs?: number, noTransition = false) => {
+    const scene = project.scenes[idx];
+    if (!scene || scene.sourceType !== "html") { fullLoadedSceneIdx.current = idx; return; }
+
+    const outIdx = fullLoadedSceneIdx.current;
+    const trans = !noTransition && outIdx >= 0 ? project.scenes[outIdx]?.transition : null;
+
+    if (!trans) {
+      writeFullSceneDirect(idx, seekMs);
+      return;
+    }
+
+    // Dual-iframe transition
+    const incomingSlot: "a" | "b" = fullActiveSlot.current === "a" ? "b" : "a";
+    cancelFullTransition();
+    writeSlot(incomingSlot, scene.html);
+    setFullTransition({ type: cssTrans(trans.id), dur: trans.duration, incoming: incomingSlot });
+
+    fullTransitionTimer.current = setTimeout(() => {
+      fullActiveSlot.current = incomingSlot;
+      setFullFrontSlot(incomingSlot);
+      setFullTransition(null);
       fullLoadedSceneIdx.current = idx;
-      // Seek to local time after animations are registered (2 frames)
       if (seekMs && seekMs > 0) {
         requestAnimationFrame(() =>
           requestAnimationFrame(() => fullWvc("seek", seekMs))
         );
       }
-    } catch {}
+    }, trans.duration);
   };
 
-  // Open modal: initialise iframe then start playing
+  // Open modal: initialise then start playing
   useEffect(() => {
     if (!showFullPreview) {
       if (fullRafRef.current) cancelAnimationFrame(fullRafRef.current);
+      cancelFullTransition();
       setFullIsPlaying(false);
       return;
     }
     fullLoadedSceneIdx.current = -1;
+    fullActiveSlot.current = "a";
+    setFullFrontSlot("a");
+    setFullTransition(null);
     setFullPlayhead(0);
-    setFullIsPlaying(false); // RAF effect will start it after iframe ready
+    setFullIsPlaying(false);
 
-    const iframe = fullIframeRef.current;
+    const iframe = fullIframeRefA.current;
     if (!iframe) return;
 
     const init = () => {
-      writeFullScene(0);
+      writeFullSceneDirect(0);
       setFullIsPlaying(true);
       fullPlayOrigin.current = { time: performance.now(), ms: 0 };
     };
@@ -491,7 +582,7 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fullIsPlaying]);
 
-  // Pause iframe animations when paused
+  // Pause active iframe animations when paused
   useEffect(() => {
     if (!fullIsPlaying) fullWvc("pause");
   }, [fullIsPlaying]); // eslint-disable-line
@@ -514,7 +605,7 @@ export default function App() {
     if (idx === fullLoadedSceneIdx.current) {
       fullWvc("seek", localMs);
     } else {
-      writeFullScene(idx, localMs);
+      writeFullSceneDirect(idx, localMs);
     }
     if (fullIsPlaying) {
       fullPlayOrigin.current = { time: performance.now(), ms: clipped };
@@ -526,8 +617,9 @@ export default function App() {
       setFullIsPlaying(false);
     } else {
       if (fullPlayhead >= totalDuration) {
-        // restart
-        writeFullScene(0);
+        fullActiveSlot.current = "a";
+        setFullFrontSlot("a");
+        writeFullSceneDirect(0);
         setFullPlayhead(0);
         fullPlayOrigin.current = { time: performance.now(), ms: 0 };
       } else {
@@ -539,10 +631,38 @@ export default function App() {
   };
 
   const handleFullRestart = () => {
-    writeFullScene(0);
+    fullActiveSlot.current = "a";
+    setFullFrontSlot("a");
+    writeFullSceneDirect(0);
     setFullPlayhead(0);
     fullPlayOrigin.current = { time: performance.now(), ms: 0 };
     setFullIsPlaying(true);
+  };
+
+  // Build inline animation style for a slot iframe
+  const slotStyle = (slot: "a" | "b"): React.CSSProperties => {
+    const base: React.CSSProperties = {
+      position: "absolute",
+      top: 0, left: 0,
+      width: project.width,
+      height: project.height,
+      border: "none",
+      transform: `scale(${fullPreviewScale})`,
+      transformOrigin: "top left",
+      background: "transparent",
+      zIndex: fullFrontSlot === slot ? 2 : 1,
+    };
+    if (!fullTransition) return base;
+    const { type, dur, incoming } = fullTransition;
+    const isIncoming = incoming === slot;
+    const isOutgoing = incoming !== slot && fullFrontSlot === slot;
+    if (isIncoming) {
+      return { ...base, zIndex: 3, animation: `fp-in-${type} ${dur}ms ease forwards` };
+    }
+    if (isOutgoing) {
+      return { ...base, zIndex: 2, animation: `fp-out-${type} ${dur}ms ease forwards` };
+    }
+    return base;
   };
 
   // ── / Full Preview ───────────────────────────────────────
@@ -556,11 +676,13 @@ export default function App() {
       {/* Preview */}
       <main className="preview">
         <div className="preview-info">
-          Viewport: <span>{project.width}x{project.height}</span> · {project.fps}fps
+          <span>Viewport: <span>{project.width}x{project.height}</span> · {project.fps}fps</span>
+          <button className="btn-mobile-props" onClick={() => setShowMobileProps(true)}>⚙ Thuộc tính</button>
         </div>
         <div
+          ref={previewContainerRef}
           className="preview-container"
-          style={{ width: project.width / 2, height: project.height / 2, background: selected?.background }}
+          style={{ background: selected?.background }}
         >
           <iframe
             ref={iframeRef}
@@ -571,9 +693,9 @@ export default function App() {
               width: project.width,
               height: project.height,
               border: "none",
-              transform: "scale(0.5)",
+              transform: `scale(${previewScale})`,
               transformOrigin: "top left",
-              background: "transparent"
+              background: "transparent",
             }}
           />
         </div>
@@ -637,7 +759,7 @@ export default function App() {
       </main>
 
       {/* Bảng thuộc tính */}
-      <aside className="props">
+      <aside className={`props${showMobileProps ? " props--mobile-open" : ""}`}>
         <div className="props-actions">
           <button onClick={() => setShowFullPreview(true)} className="btn-full-preview">
             ▶ Xem trước
@@ -648,6 +770,7 @@ export default function App() {
         </div>
         <div className="panel-header">
           <h2>Thuộc tính</h2>
+          <button className="btn-close-mobile-props" onClick={() => setShowMobileProps(false)}>✕</button>
         </div>
         <div className="panel-content">
 
@@ -738,7 +861,12 @@ export default function App() {
             )}
             <div className="form-group">
               <label>Đường dẫn ảnh bìa</label>
-              <input placeholder="./cover.jpg" value={project.attachCoverPath} onChange={(e) => updateProject({ attachCoverPath: e.target.value })} />
+              <FileOrUrlInput
+                accept="image/*"
+                placeholder="./cover.jpg hoặc URL"
+                value={project.attachCoverPath}
+                onChange={(v) => updateProject({ attachCoverPath: v })}
+              />
             </div>
           </PropSection>
 
@@ -752,7 +880,12 @@ export default function App() {
                 </div>
                 <div className="form-group">
                   <label>Đường dẫn / URL</label>
-                  <input placeholder="./font.ttf" value={font.path} onChange={(e) => updateFont(font.id, { path: e.target.value })} />
+                  <FileOrUrlInput
+                    accept=".ttf,.otf,.woff,.woff2"
+                    placeholder="./font.ttf hoặc URL"
+                    value={font.path}
+                    onChange={(v) => updateFont(font.id, { path: v })}
+                  />
                 </div>
                 <div className="form-row">
                   <div className="form-group">
@@ -784,7 +917,12 @@ export default function App() {
                 </div>
                 <div className="form-group">
                   <label>Đường dẫn / URL</label>
-                  <input placeholder="./bgm.mp3" value={audio.path} onChange={(e) => updateAudio(audio.id, { path: e.target.value })} />
+                  <FileOrUrlInput
+                    accept="audio/*"
+                    placeholder="./bgm.mp3 hoặc URL"
+                    value={audio.path}
+                    onChange={(v) => updateAudio(audio.id, { path: v })}
+                  />
                 </div>
                 <div className="form-row">
                   <div className="form-group">
@@ -992,48 +1130,78 @@ export default function App() {
               <div
                 className="full-preview-container"
                 style={{
-                  width: project.width / 2,
-                  height: project.height / 2,
+                  width: Math.round(project.width * fullPreviewScale),
+                  height: Math.round(project.height * fullPreviewScale),
                   background: project.scenes[fullSceneIdx]?.background ?? "#000",
+                  position: "relative",
+                  overflow: "hidden",
                 }}
               >
-                <iframe
-                  ref={fullIframeRef}
-                  src="about:blank"
-                  title="xem trước tổng"
-                  style={{
-                    width: project.width,
-                    height: project.height,
-                    border: "none",
-                    transform: "scale(0.5)",
-                    transformOrigin: "top left",
-                    background: "transparent",
-                  }}
-                />
+                <iframe ref={fullIframeRefA} src="about:blank" title="a" style={slotStyle("a")} />
+                <iframe ref={fullIframeRefB} src="about:blank" title="b" style={slotStyle("b")} />
               </div>
             </div>
 
-            {/* Scene markers timeline */}
-            <div className="full-timeline">
-              {project.scenes.map((scene, i) => {
-                const off = sceneOffsets[i];
-                const pct = totalDuration > 0 ? (off.end - off.start) / totalDuration * 100 : 0;
-                return (
+            {/* Timeline tracks */}
+            <div className="full-track-area">
+
+              {/* Scene track */}
+              <div className="full-track-row">
+                <div className="full-track-label">Cảnh</div>
+                <div className="full-track-lane full-timeline">
+                  {project.scenes.map((scene, i) => {
+                    const off = sceneOffsets[i];
+                    const pct = totalDuration > 0 ? (off.end - off.start) / totalDuration * 100 : 0;
+                    return (
+                      <div
+                        key={scene.id}
+                        className={`full-scene-seg${i === fullSceneIdx ? " active" : ""}`}
+                        style={{ width: `${pct}%` }}
+                        onClick={() => handleFullSeek(off.start)}
+                        title={`${scene.name} (${fmt(off.end - off.start)})`}
+                      >
+                        <span className="full-scene-label">{scene.name}</span>
+                      </div>
+                    );
+                  })}
                   <div
-                    key={scene.id}
-                    className={`full-scene-seg${i === fullSceneIdx ? " active" : ""}`}
-                    style={{ width: `${pct}%` }}
-                    onClick={() => handleFullSeek(off.start)}
-                    title={`${scene.name} (${fmt(off.end - off.start)})`}
-                  >
-                    <span className="full-scene-label">{scene.name}</span>
+                    className="full-playhead-marker"
+                    style={{ left: totalDuration > 0 ? `${fullPlayhead / totalDuration * 100}%` : "0%" }}
+                  />
+                </div>
+              </div>
+
+              {/* Audio tracks */}
+              {project.audios.filter((a) => a.path?.trim()).map((audio, i) => {
+                const start = audio.startTime ?? 0;
+                const end = audio.endTime > 0 ? audio.endTime : totalDuration;
+                const leftPct = totalDuration > 0 ? (start / totalDuration) * 100 : 0;
+                const widthPct = totalDuration > 0 ? ((end - start) / totalDuration) * 100 : 100;
+                const name = audio.path.split("/").pop()?.split("?")[0] ?? `Audio ${i + 1}`;
+                return (
+                  <div key={audio.id} className="full-track-row">
+                    <div className="full-track-label full-track-label--audio" title={audio.path}>
+                      ♪ {i + 1}
+                    </div>
+                    <div className="full-track-lane">
+                      <div
+                        className={`full-audio-seg${audio.loop ? " looping" : ""}`}
+                        style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                        title={`${name} · vol ${audio.volume}%${audio.loop ? " · lặp" : ""}`}
+                        onClick={() => handleFullSeek(start)}
+                      >
+                        <span className="full-audio-label">{name}</span>
+                        {audio.loop && <span className="full-audio-loop">↻</span>}
+                      </div>
+                      <div
+                        className="full-playhead-marker"
+                        style={{ left: totalDuration > 0 ? `${fullPlayhead / totalDuration * 100}%` : "0%" }}
+                      />
+                    </div>
                   </div>
                 );
               })}
-              <div
-                className="full-playhead-marker"
-                style={{ left: totalDuration > 0 ? `${fullPlayhead / totalDuration * 100}%` : "0%" }}
-              />
+
             </div>
 
             {/* Controls */}
@@ -1058,32 +1226,90 @@ export default function App() {
         </div>
       )}
 
-      {/* Timeline — Scene Track (bottom) */}
+      {/* Timeline — bottom */}
       <aside className="sidebar">
+
+        {/* Left controls column */}
         <div className="timeline-controls">
           <span className="timeline-label">Cảnh ({project.scenes.length})</span>
           <button onClick={() => setShowTemplates(true)} className="btn-template">📋 Template</button>
-          <button onClick={addScene} className="btn-secondary">+ Thêm</button>
+          <button onClick={addScene} className="btn-secondary">+ Cảnh</button>
+          <div className="timeline-divider" />
+          <span className="timeline-label">Âm thanh</span>
+          <button
+            className="btn-secondary"
+            onClick={() => {
+              const track: import("./lib/types").AudioTrack = {
+                id: uid(), path: "", loop: false, volume: 100,
+                startTime: 0, endTime: 0,
+                seekStart: 0, seekEnd: 0, fadeInDuration: 0, fadeOutDuration: 0,
+              };
+              updateProject({ audios: [...project.audios, track] });
+            }}
+          >+ Audio</button>
         </div>
-        <DndContext collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-          <SortableContext
-            items={project.scenes.map((s) => s.id)}
-            strategy={horizontalListSortingStrategy}
-          >
-            <div className="scene-list">
-              {project.scenes.map((scene) => (
-                <SceneListItem
-                  key={scene.id}
-                  scene={scene}
-                  active={scene.id === selectedId}
-                  onSelect={() => setSelectedId(scene.id)}
-                  onDelete={() => deleteScene(scene.id)}
-                  onDuplicate={() => duplicateScene(scene.id)}
-                />
-              ))}
-            </div>
-          </SortableContext>
-        </DndContext>
+
+        {/* Right: shared scrollable tracks area */}
+        <div className="timeline-scrollable">
+
+          {/* Scene track — proportional widths */}
+          <div className="scene-track">
+            <DndContext collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+              <SortableContext
+                items={project.scenes.map((s) => s.id)}
+                strategy={horizontalListSortingStrategy}
+              >
+                {project.scenes.map((scene) => (
+                  <SceneListItem
+                    key={scene.id}
+                    scene={scene}
+                    active={scene.id === selectedId}
+                    onSelect={() => setSelectedId(scene.id)}
+                    onDelete={() => deleteScene(scene.id)}
+                    onDuplicate={() => duplicateScene(scene.id)}
+                    wrapStyle={{ flex: scene.duration, minWidth: 100 }}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
+          </div>
+
+          {/* Audio tracks — same proportional space */}
+          <div className="audio-tracks-area">
+            {project.audios.length === 0 ? (
+              <div className="audio-tracks-empty">Chưa có âm thanh — nhấn + Audio để thêm</div>
+            ) : (
+              project.audios.map((audio, i) => {
+                const start = audio.startTime ?? 0;
+                const rawEnd = audio.endTime > 0 ? audio.endTime : totalDuration;
+                const end = Math.min(rawEnd, totalDuration);
+                const leftPct = totalDuration > 0 ? (start / totalDuration) * 100 : 0;
+                const widthPct = totalDuration > 0 ? ((end - start) / totalDuration) * 100 : 100;
+                const name = audio.path
+                  ? (audio.path.split("/").pop()?.split("?")[0] ?? `Audio ${i + 1}`)
+                  : `Audio ${i + 1}`;
+                const overLimit = totalDuration > 0 && audio.endTime > 0 && audio.endTime > totalDuration;
+                return (
+                  <div key={audio.id} className="audio-track-row">
+                    <div
+                      className={`audio-clip${overLimit ? " audio-clip--warn" : ""}${audio.loop ? " audio-clip--loop" : ""}`}
+                      style={{ left: `${leftPct}%`, width: `${Math.max(widthPct, 0.5)}%` }}
+                      title={`${name} · ${fmt(start)} → ${fmt(end)}${audio.loop ? " · lặp" : ""}${overLimit ? " ⚠ vượt tổng thời gian" : ""}`}
+                    >
+                      <span className="audio-clip-label">{name}</span>
+                      {audio.loop && <span className="audio-clip-icon">↻</span>}
+                      <button
+                        className="audio-clip-remove"
+                        onClick={(e) => { e.stopPropagation(); removeAudio(audio.id); }}
+                      >✕</button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+        </div>
       </aside>
     </div>
   );

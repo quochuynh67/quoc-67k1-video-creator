@@ -1,3 +1,4 @@
+import type React from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { Scene } from "../lib/types";
@@ -7,21 +8,24 @@ export function SceneListItem({
   active,
   onSelect,
   onDelete,
-  onDuplicate
+  onDuplicate,
+  wrapStyle,
 }: {
   scene: Scene;
   active: boolean;
   onSelect: () => void;
   onDelete: () => void;
   onDuplicate: () => void;
+  wrapStyle?: React.CSSProperties;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({
     id: scene.id
   });
 
-  const style = {
+  const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
-    transition
+    transition,
+    ...wrapStyle,
   };
 
   return (
