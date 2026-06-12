@@ -25,37 +25,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     # Fonts for headless rendering
     fonts-liberation \
-    # Chromium browser (avoids runtime download by Puppeteer)
-    chromium \
     # Misc utilities
     ca-certificates \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-ENV CHROMIUM_PATH=/usr/bin/chromium
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+WORKDIR /app/server
 
-WORKDIR /app
-
-# Copy root package files for workspace-aware install
+# Copy package files first for better layer caching
 COPY package.json package-lock.json* ./
 
-# Copy workspace package files (needed before npm ci)
-COPY client/package.json ./client/
-COPY server/package.json ./server/
+# Install dependencies (postinstall script patches web-video-creator)
+RUN npm install
 
-# Copy server scripts needed by postinstall (patch-wvc.mjs runs during npm ci)
-COPY server/scripts/ ./server/scripts/
+# Copy source and config
+COPY tsconfig.json ./
+COPY src/ ./src/
+COPY scripts/ ./scripts/
 
-# Install all workspace dependencies
-RUN npm ci
+# Build TypeScript
+RUN npm run build
 
-# Copy the rest of the project
-COPY . .
+EXPOSE 3000
 
-# Build the server workspace
-RUN npm run build --workspace=wvc-editor-server
-
-EXPOSE 3001
-
-CMD ["npm", "run", "start", "--workspace=wvc-editor-server"]
+CMD ["node", "dist/index.js"]
