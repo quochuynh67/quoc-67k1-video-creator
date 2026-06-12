@@ -39,6 +39,9 @@ COPY package.json package-lock.json* ./
 COPY client/package.json ./client/
 COPY server/package.json ./server/
 
+# Copy server scripts needed by postinstall (patch-wvc.mjs runs during npm ci)
+COPY server/scripts/ ./server/scripts/
+
 # Install all workspace dependencies
 RUN npm ci
 
