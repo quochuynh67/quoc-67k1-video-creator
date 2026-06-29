@@ -1,13 +1,18 @@
 import express from "express";
 import cors from "cors";
 import path from "node:path";
+import os from "node:os";
 import { mkdirSync } from "node:fs";
 import fs from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import multer from "multer";
 import { renderProject } from "./render.js";
 import type { Project } from "./types.js";
-import { convertToHls, listAllMp4s } from "./hls.js";
+import { convertToHls } from "./hls.js";
 import type { HlsOptions } from "./hls.js";
+
+const execFileAsync = promisify(execFile);
 
 const app = express();
 app.use((req, res, next) => {
@@ -31,9 +36,6 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-const hlsOutputDir = path.resolve("output/hls");
-mkdirSync(hlsOutputDir, { recursive: true });
-
 // Serve static assets
 app.use("/output", express.static(path.resolve("output")));
 app.use("/uploads", express.static(uploadDir));
@@ -54,73 +56,90 @@ app.post("/api/render", async (req, res) => {
   }
 });
 
-// POST /api/convert-hls
-// Body: { inputPath: string (absolute or /uploads/... url), outputDir?: string, ...HlsOptions }
-// Returns conversion result with playlistUrl for streaming.
-app.post("/api/convert-hls", async (req, res) => {
+// POST /api/convert-hls  (multipart: field "file" = MP4, optional JSON fields as form fields)
+// One-shot: upload MP4 → convert → return zip → delete everything
+const hlsUpload = multer({ dest: os.tmpdir() });
+app.post("/api/convert-hls", hlsUpload.single("file"), async (req, res) => {
+  const tmpInput = req.file?.path ?? null;
+  let tmpHlsDir: string | null = null;
+  let zipFile: string | null = null;
+
+  async function cleanup() {
+    await Promise.allSettled([
+      tmpInput ? fs.rm(tmpInput, { force: true }) : Promise.resolve(),
+      tmpHlsDir ? fs.rm(tmpHlsDir, { recursive: true, force: true }) : Promise.resolve(),
+      zipFile ? fs.rm(zipFile, { force: true }) : Promise.resolve(),
+    ]);
+  }
+
   try {
-    const { inputPath, outputDir: rawOutputDir, ...hlsOpts } = req.body as {
-      inputPath: string;
-      outputDir?: string;
-    } & HlsOptions;
-
-    if (!inputPath) {
-      res.status(400).json({ ok: false, error: "inputPath is required" });
+    if (!tmpInput) {
+      res.status(400).json({ ok: false, error: "Field 'file' (MP4) is required" });
       return;
     }
 
-    // Resolve inputPath: accept URL-style /uploads/... or absolute paths
-    const absInput = inputPath.startsWith("/uploads/")
-      ? path.join(uploadDir, path.basename(inputPath))
-      : path.resolve(inputPath);
-
-    const stat = await fs.stat(absInput).catch(() => null);
-    if (!stat) {
-      res.status(400).json({ ok: false, error: `File not found: ${inputPath}` });
+    const originalName = req.file!.originalname ?? "video.mp4";
+    if (!originalName.toLowerCase().endsWith(".mp4")) {
+      res.status(400).json({ ok: false, error: "File must be an MP4" });
+      await cleanup();
       return;
     }
 
-    const outDir = rawOutputDir ? path.resolve(rawOutputDir) : hlsOutputDir;
-    mkdirSync(outDir, { recursive: true });
+    // Rename to .mp4 so ffmpeg detects format correctly
+    const namedInput = `${tmpInput}.mp4`;
+    await fs.rename(tmpInput, namedInput);
+    (req.file as any).path = namedInput;
 
-    if (stat.isFile()) {
-      if (!absInput.toLowerCase().endsWith(".mp4")) {
-        res.status(400).json({ ok: false, error: "File must be an MP4" });
-        return;
-      }
+    const hlsOpts: HlsOptions = {
+      maxSizeMb: req.body.maxSizeMb ? Number(req.body.maxSizeMb) : undefined,
+      startHlsTime: req.body.startHlsTime ? Number(req.body.startHlsTime) : undefined,
+      minHlsTime: req.body.minHlsTime ? Number(req.body.minHlsTime) : undefined,
+      stepDown: req.body.stepDown ? Number(req.body.stepDown) : undefined,
+      maxRetries: req.body.maxRetries ? Number(req.body.maxRetries) : undefined,
+      videoCodec: req.body.videoCodec,
+      audioCodec: req.body.audioCodec,
+      preset: req.body.preset,
+      crf: req.body.crf ? Number(req.body.crf) : undefined,
+      videoBitrateK: req.body.videoBitrateK ? Number(req.body.videoBitrateK) : undefined,
+      audioBitrateK: req.body.audioBitrateK ? Number(req.body.audioBitrateK) : undefined,
+      fps: req.body.fps ? Number(req.body.fps) : undefined,
+      width: req.body.width ? Number(req.body.width) : undefined,
+      profile: req.body.profile,
+      level: req.body.level,
+    };
 
-      const result = await convertToHls(absInput, outDir, hlsOpts);
-      if (!result.ok) {
-        res.status(422).json(result);
-        return;
-      }
+    tmpHlsDir = await fs.mkdtemp(path.join(os.tmpdir(), "hls-out-"));
+    const result = await convertToHls(namedInput, tmpHlsDir, hlsOpts);
 
-      const relPlaylist = path.relative(path.resolve("output"), result.playlistFile);
-      res.json({ ...result, playlistUrl: `/output/${relPlaylist.replace(/\\/g, "/")}` });
-    } else {
-      // Directory: convert all MP4s inside
-      const mp4Files = await listAllMp4s(absInput);
-      if (!mp4Files.length) {
-        res.status(400).json({ ok: false, error: "No MP4 files found in directory" });
-        return;
-      }
-
-      const results = [];
-      for (const file of mp4Files) {
-        const result = await convertToHls(file, outDir, hlsOpts);
-        if (result.ok) {
-          const relPlaylist = path.relative(path.resolve("output"), result.playlistFile);
-          results.push({ ...result, playlistUrl: `/output/${relPlaylist.replace(/\\/g, "/")}` });
-        } else {
-          results.push(result);
-        }
-      }
-
-      res.json({ ok: true, results });
+    if (!result.ok) {
+      res.status(422).json(result);
+      await cleanup();
+      return;
     }
+
+    // Zip the HLS folder
+    const baseName = path.basename(result.hlsDir);
+    zipFile = path.join(os.tmpdir(), `${baseName}.zip`);
+    await execFileAsync("zip", ["-r", zipFile, baseName], { cwd: tmpHlsDir });
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${baseName}.zip"`);
+    res.setHeader("X-Hls-Time", String(result.hlsTime));
+    res.setHeader("X-Hls-Attempt", String(result.attempt));
+    res.setHeader("X-Hls-Largest-Mb", result.largestMb.toFixed(2));
+
+    res.download(zipFile, `${baseName}.zip`, async (err) => {
+      if (err && !res.headersSent) {
+        res.status(500).json({ ok: false, error: "Failed to send file" });
+      }
+      await cleanup();
+    });
   } catch (error: any) {
     console.error("HLS conversion failed:", error);
-    res.status(500).json({ ok: false, error: error?.message ?? "Conversion error" });
+    await cleanup();
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: error?.message ?? "Conversion error" });
+    }
   }
 });
 
