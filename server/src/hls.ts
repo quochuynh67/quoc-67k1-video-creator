@@ -124,7 +124,7 @@ async function runFfmpegHls(
     "-hls_time", String(hlsTime),
     "-hls_list_size", "0",
     "-hls_playlist_type", "vod",
-    "-hls_flags", "independent_segments+temp_file+split_by_time",
+    "-hls_flags", "independent_segments",
     "-hls_segment_filename", segPattern,
     "-f", "hls",
     playlistFile
@@ -170,7 +170,12 @@ export async function convertToHls(
     await removeDirSafe(hlsDir);
 
     console.log(`[hls] attempt ${attempt}: ${baseName}, hls_time=${hlsTime}s`);
-    await runFfmpegHls(inputFile, hlsDir, opts, hlsTime);
+    try {
+      await runFfmpegHls(inputFile, hlsDir, opts, hlsTime);
+    } catch (err: any) {
+      const stderr = err?.stderr ?? err?.message ?? String(err);
+      throw new Error(`ffmpeg failed (attempt ${attempt}, hls_time=${hlsTime}s): ${stderr}`);
+    }
 
     const check = await verifySegments(hlsDir, opts.maxSizeMb);
     lastCheck = check;

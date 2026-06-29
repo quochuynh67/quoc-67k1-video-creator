@@ -56,39 +56,38 @@ app.post("/api/render", async (req, res) => {
   }
 });
 
-// POST /api/convert-hls  (multipart: field "file" = MP4, optional JSON fields as form fields)
-// One-shot: upload MP4 → convert → return zip → delete everything
+// POST /api/convert-hls  (multipart: field "file" = MP4, optional fields as form fields)
+// One-shot: upload MP4 → convert → return tar.gz → delete everything
 const hlsUpload = multer({ dest: os.tmpdir() });
 app.post("/api/convert-hls", hlsUpload.single("file"), async (req, res) => {
-  const tmpInput = req.file?.path ?? null;
+  let namedInput: string | null = null;
   let tmpHlsDir: string | null = null;
-  let zipFile: string | null = null;
+  let tarFile: string | null = null;
 
   async function cleanup() {
     await Promise.allSettled([
-      tmpInput ? fs.rm(tmpInput, { force: true }) : Promise.resolve(),
+      namedInput ? fs.rm(namedInput, { force: true }) : Promise.resolve(),
       tmpHlsDir ? fs.rm(tmpHlsDir, { recursive: true, force: true }) : Promise.resolve(),
-      zipFile ? fs.rm(zipFile, { force: true }) : Promise.resolve(),
+      tarFile ? fs.rm(tarFile, { force: true }) : Promise.resolve(),
     ]);
   }
 
   try {
-    if (!tmpInput) {
+    if (!req.file) {
       res.status(400).json({ ok: false, error: "Field 'file' (MP4) is required" });
       return;
     }
 
-    const originalName = req.file!.originalname ?? "video.mp4";
+    const originalName = req.file.originalname ?? "video.mp4";
     if (!originalName.toLowerCase().endsWith(".mp4")) {
+      await fs.rm(req.file.path, { force: true });
       res.status(400).json({ ok: false, error: "File must be an MP4" });
-      await cleanup();
       return;
     }
 
     // Rename to .mp4 so ffmpeg detects format correctly
-    const namedInput = `${tmpInput}.mp4`;
-    await fs.rename(tmpInput, namedInput);
-    (req.file as any).path = namedInput;
+    namedInput = `${req.file.path}.mp4`;
+    await fs.rename(req.file.path, namedInput);
 
     const hlsOpts: HlsOptions = {
       maxSizeMb: req.body.maxSizeMb ? Number(req.body.maxSizeMb) : undefined,
@@ -96,16 +95,16 @@ app.post("/api/convert-hls", hlsUpload.single("file"), async (req, res) => {
       minHlsTime: req.body.minHlsTime ? Number(req.body.minHlsTime) : undefined,
       stepDown: req.body.stepDown ? Number(req.body.stepDown) : undefined,
       maxRetries: req.body.maxRetries ? Number(req.body.maxRetries) : undefined,
-      videoCodec: req.body.videoCodec,
-      audioCodec: req.body.audioCodec,
-      preset: req.body.preset,
+      videoCodec: req.body.videoCodec || undefined,
+      audioCodec: req.body.audioCodec || undefined,
+      preset: req.body.preset || undefined,
       crf: req.body.crf ? Number(req.body.crf) : undefined,
       videoBitrateK: req.body.videoBitrateK ? Number(req.body.videoBitrateK) : undefined,
       audioBitrateK: req.body.audioBitrateK ? Number(req.body.audioBitrateK) : undefined,
       fps: req.body.fps ? Number(req.body.fps) : undefined,
       width: req.body.width ? Number(req.body.width) : undefined,
-      profile: req.body.profile,
-      level: req.body.level,
+      profile: req.body.profile || undefined,
+      level: req.body.level || undefined,
     };
 
     tmpHlsDir = await fs.mkdtemp(path.join(os.tmpdir(), "hls-out-"));
@@ -117,18 +116,18 @@ app.post("/api/convert-hls", hlsUpload.single("file"), async (req, res) => {
       return;
     }
 
-    // Zip the HLS folder
+    // Pack the HLS folder into a tar.gz (tar is always available on Linux)
     const baseName = path.basename(result.hlsDir);
-    zipFile = path.join(os.tmpdir(), `${baseName}.zip`);
-    await execFileAsync("zip", ["-r", zipFile, baseName], { cwd: tmpHlsDir });
+    tarFile = path.join(os.tmpdir(), `${baseName}.tar.gz`);
+    await execFileAsync("tar", ["-czf", tarFile, "-C", tmpHlsDir, baseName]);
 
-    res.setHeader("Content-Type", "application/zip");
-    res.setHeader("Content-Disposition", `attachment; filename="${baseName}.zip"`);
+    res.setHeader("Content-Type", "application/gzip");
+    res.setHeader("Content-Disposition", `attachment; filename="${baseName}.tar.gz"`);
     res.setHeader("X-Hls-Time", String(result.hlsTime));
     res.setHeader("X-Hls-Attempt", String(result.attempt));
     res.setHeader("X-Hls-Largest-Mb", result.largestMb.toFixed(2));
 
-    res.download(zipFile, `${baseName}.zip`, async (err) => {
+    res.download(tarFile, `${baseName}.tar.gz`, async (err) => {
       if (err && !res.headersSent) {
         res.status(500).json({ ok: false, error: "Failed to send file" });
       }
