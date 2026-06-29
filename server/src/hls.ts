@@ -139,6 +139,10 @@ export async function convertToHls(
   outputDir: string,
   userOpts: HlsOptions = {}
 ): Promise<HlsResult | HlsFailure> {
+  // Strip undefined values so they don't overwrite defaults via spread
+  const defined = Object.fromEntries(
+    Object.entries(userOpts).filter(([, v]) => v !== undefined)
+  );
   const opts: Required<HlsOptions> = {
     maxSizeMb: 10,
     startHlsTime: 10,
@@ -155,7 +159,7 @@ export async function convertToHls(
     width: null,
     profile: "main",
     level: "4.0",
-    ...userOpts,
+    ...defined,
   };
 
   const baseName = path.basename(inputFile, path.extname(inputFile));
